@@ -260,30 +260,32 @@ def test_huge_flat_loss_not_misdiagnosed_as_plateau():
     assert _has(findings, "inf"), "should flag the inf grad instead"
 
 
-def test_hf_adapter_feeds_monitor():
-    """The HF callback's core feed turns HF-style on_log dicts into Monitor rows
-    (step from state, val carried forward) and surfaces a real failure — verified
-    without needing transformers installed."""
-    from integrations import _hf_feed
+def test_shared_feed_handles_framework_streams():
+    """The shared _feed (used by hf/lightning/keras adapters) turns framework-style
+    metric dicts into Monitor rows — step supplied by the adapter, val carried
+    forward — and surfaces a real failure. Verified without any framework installed."""
+    from integrations import _feed
     import gradsnitch as gs
 
     mon = gs.watch()
     pending = [None]
-    for step in range(
-        300
-    ):  # steps jump by 5 (logging_steps) — exercises step-from-state
+    for step in range(300):  # steps jump by 5 (logging_steps) — adapter supplies step
         loss = float("nan") if step >= 200 else 1.0 / (step + 1)
-        _hf_feed(
+        # mix of alias spellings the three frameworks use
+        _feed(
             mon,
             step * 5,
             {"loss": loss, "grad_norm": 1.0, "learning_rate": 3e-4},
             pending,
         )
-    assert _has(gs.lint(mon.df()), "nan"), "HF adapter didn't surface the NaN"
-    _hf_feed(
+    assert _has(gs.lint(mon.df()), "nan"), "adapter feed didn't surface the NaN"
+    _feed(
         mon, 9999, {"eval_loss": 0.5}, pending
-    )  # eval-only call: no train row, val stashed
-    assert pending[0] == 0.5, "eval-only on_log should carry val forward, not log a row"
+    )  # eval-only: no train row, val stashed
+    assert pending[0] == 0.5, "eval-only call should carry val forward, not log a row"
+    # Lightning-style (val_loss key) and Keras-style (val_loss at epoch) both normalize
+    _feed(mon, 10000, {"train_loss": 0.4, "val_loss": 0.6}, pending)
+    assert mon.df().iloc[-1]["val_loss"] == 0.6, "val not attached to the train row"
 
 
 if __name__ == "__main__":

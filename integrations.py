@@ -1,49 +1,137 @@
 """Framework adapters: thin shims that feed metrics into a gradsnitch Monitor.
 
 Each lazily imports its own framework, so none is a hard dependency and the base
-module stays torch-optional. The reusable unit is a tiny per-framework feed (step
-derivation + type coercion + name mapping via the shared normalize()); Monitor
-stays the single sink for dedup / live alerts / report().
+module stays torch-optional. The reusable unit is the shared `_feed` (name
+mapping via normalize() + carry-val-forward + one Monitor row); every adapter
+just does its framework-specific *extraction* (where step / metrics / grad_norm
+live) and calls `_feed`. Monitor stays the single sink for dedup / live / report.
 """
 
 from gradsnitch import watch, normalize
 
 
-def _hf_feed(mon, global_step, logs, pending):
-    """Core HF on_log logic — testable without transformers installed.
+def _feed(mon, step, metrics, pending):
+    """Shared feed. `metrics` is a plain name->number dict; adapters supply it.
 
-    HF fires on_log separately for train (loss/grad_norm/learning_rate) and eval
-    (eval_loss); the step lives on state.global_step, NOT in logs. So we read step
-    from the caller and carry the latest val forward, attaching it to the next
-    train row so val aligns with a real step (and no eval-only NaN row is created).
+    Frameworks log train (loss/grad_norm/lr) and eval (val_loss) at different
+    times, so carry the latest val forward onto the next train row — keeps val
+    aligned to a real step and never creates an eval-only NaN row.
     """
-    m = normalize(dict(logs))
+    m = normalize(dict(metrics))
     if "val_loss" in m:
         pending[0] = m["val_loss"]
     if "train_loss" in m:
         extra = {k: m[k] for k in ("grad_norm", "lr") if k in m}
-        mon.log(int(global_step), m["train_loss"], val_loss=pending[0], **extra)
+        mon.log(int(step), m["train_loss"], val_loss=pending[0], **extra)
         pending[0] = None
 
 
 def hf(check_every: int = 0):
     """HuggingFace Trainer callback: `Trainer(..., callbacks=[integrations.hf()])`.
 
-    Prints error verdicts live every `check_every` logs; full report at train end.
+    HF's on_log gives loss/grad_norm/learning_rate free; step is on state.global_step.
     """
     from transformers import TrainerCallback  # lazy: optional dependency
 
-    mon = watch(check_every=check_every)  # model=None; metrics come from logs
+    mon = watch(check_every=check_every)
     pending = [None]
 
     class SnitchCallback(TrainerCallback):
         def on_log(self, args, state, control, logs=None, **kw):
             if logs:
-                _hf_feed(mon, state.global_step, logs, pending)
+                _feed(mon, state.global_step, logs, pending)
 
         def on_train_end(self, args, state, control, **kw):
             mon.report()
 
     cb = SnitchCallback()
-    cb.monitor = mon  # expose for inspection / a manual .report()
+    cb.monitor = mon
+    return cb
+
+
+def lightning(check_every: int = 0):
+    """PyTorch Lightning callback: `Trainer(callbacks=[integrations.lightning()])`.
+
+    Lightning metrics live in `trainer.callback_metrics` as tensors (coerce to
+    float). grad_norm is NOT free — compute it in on_before_optimizer_step via the
+    utility and stash it for the next batch end; if unavailable, degrade to
+    loss-only (detectors self-silence).
+    """
+    try:
+        from lightning.pytorch import Callback
+        from lightning.pytorch.utilities import grad_norm as _ln_grad_norm
+    except ImportError:  # older package name
+        from pytorch_lightning import Callback
+        from pytorch_lightning.utilities import grad_norm as _ln_grad_norm
+
+    mon = watch(check_every=check_every)
+    pending = [None]
+    stash = {"grad_norm": None}
+
+    class SnitchCallback(Callback):
+        def on_before_optimizer_step(self, trainer, pl_module, optimizer, *a):
+            try:
+                norms = _ln_grad_norm(pl_module, norm_type=2)
+                stash["grad_norm"] = float(norms.get("grad_2.0_norm_total"))
+            except Exception:
+                stash["grad_norm"] = None  # degrade to loss-only
+
+        def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+            metrics = {k: float(v) for k, v in trainer.callback_metrics.items()}
+            if stash["grad_norm"] is not None:
+                metrics["grad_norm"] = stash["grad_norm"]
+            _feed(mon, trainer.global_step, metrics, pending)
+
+        def on_train_end(self, trainer, pl_module):
+            mon.report()
+
+    cb = SnitchCallback()
+    cb.monitor = mon
+    return cb
+
+
+def _keras_lr(model):
+    try:
+        lr = model.optimizer.learning_rate
+        return float(lr)
+    except Exception:
+        return None  # LR schedules / backends that don't float cleanly -> skip
+
+
+def keras(check_every: int = 0):
+    """Keras callback: `model.fit(..., callbacks=[integrations.keras()])`.
+
+    Keras gives loss (and val_loss at epoch end) but no grad_norm; lr comes off
+    the optimizer. `batch` resets every epoch, so the canonical step is
+    epoch*steps_per_epoch + batch (monotonic).
+    """
+    import keras  # lazy: optional dependency
+
+    mon = watch(check_every=check_every)
+    pending = [None]
+    st = {"epoch": 0, "spe": 0}
+
+    class SnitchCallback(keras.callbacks.Callback):
+        def on_epoch_begin(self, epoch, logs=None):
+            st["epoch"] = epoch
+
+        def on_train_batch_end(self, batch, logs=None):
+            step = st["epoch"] * st["spe"] + batch
+            st["spe"] = max(st["spe"], batch + 1)
+            metrics = dict(logs or {})
+            lr = _keras_lr(self.model)
+            if lr is not None:
+                metrics["lr"] = lr
+            _feed(mon, step, metrics, pending)
+
+        def on_epoch_end(self, epoch, logs=None):
+            val = {k: v for k, v in (logs or {}).items() if k.startswith("val")}
+            if val:  # surface val so it's carried onto the next train row
+                _feed(mon, (epoch + 1) * st["spe"], val, pending)
+
+        def on_train_end(self, logs=None):
+            mon.report()
+
+    cb = SnitchCallback()
+    cb.monitor = mon
     return cb
