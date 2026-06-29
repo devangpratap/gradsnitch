@@ -55,6 +55,23 @@ def detect_nonfinite_loss(df: pd.DataFrame) -> Finding | None:
     )
 
 
+def detect_nonfinite_grad(df: pd.DataFrame) -> Finding | None:
+    if "grad_norm" not in df:
+        return None
+    bad = df[~np.isfinite(df["grad_norm"])]
+    if bad.empty:
+        return None
+    step = int(bad.iloc[0]["step"])  # grads often overflow before the loss does
+    return Finding(
+        name="Gradient norm is inf/NaN",
+        severity="error",
+        evidence=f"grad_norm non-finite first at step {step}",
+        likely_cause="Exploding gradients — overflow before the loss shows it.",
+        suggestion="Add/tighten grad clipping (max_norm=1.0), lower LR, "
+        "check inputs; use bf16 over fp16.",
+    )
+
+
 def detect_grad_spike(
     df: pd.DataFrame, k: float = 8.0, win: int = 50
 ) -> Finding | None:
@@ -113,6 +130,8 @@ def detect_overfitting(
 def detect_loss_plateau(
     df: pd.DataFrame, frac: float = 0.2, t_thresh: float = 4.0
 ) -> Finding | None:
+    if "grad_norm" in df and not np.isfinite(df["grad_norm"]).all():
+        return None  # exploding grads -> a blow-up, not a low-LR plateau (detect_nonfinite_grad owns it)
     s = df["train_loss"].astype(float)
     s = s[np.isfinite(s)]
     n = len(s)
@@ -184,6 +203,7 @@ def detect_loss_divergence(
 
 DETECTORS = [
     detect_nonfinite_loss,
+    detect_nonfinite_grad,
     detect_grad_spike,
     detect_overfitting,
     detect_loss_plateau,
@@ -197,7 +217,7 @@ _ALIASES = {
     "step": ["global_step", "_step", "iteration", "train/step"],
     "train_loss": ["loss", "train/loss", "training_loss", "train_loss_step"],
     "val_loss": ["eval_loss", "val/loss", "validation_loss", "val_loss_epoch"],
-    "lr": ["learning_rate", "train/lr", "lr"],
+    "lr": ["learning_rate", "train/lr"],
     "grad_norm": ["train/grad_norm", "gradient_norm", "total_norm"],
 }
 

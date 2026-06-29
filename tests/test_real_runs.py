@@ -228,6 +228,38 @@ def test_aliased_columns_are_normalized():
     )
 
 
+def test_inf_grad_norm_is_flagged():
+    """A real HF run at high LR reports grad_norm=inf while loss is still finite (grads
+    overflow first). That unambiguous blow-up must not slip through silently."""
+    import gradsnitch as gs
+    import numpy as np
+
+    df = gs._synthetic("clean").copy()
+    df.loc[150:, "grad_norm"] = np.inf
+    assert _has(gs.lint(df), "inf"), "inf grad_norm went unflagged"
+
+
+def test_huge_flat_loss_not_misdiagnosed_as_plateau():
+    """Catastrophic LR can pin loss flat at ~1e26 with exploding grads. Must NOT read as
+    'plateau / LR too low' — the opposite advice (the worst kind of wrong diagnosis)."""
+    import gradsnitch as gs
+    import pandas as pd
+    import numpy as np
+
+    n = 400
+    df = pd.DataFrame(
+        {
+            "step": np.arange(n),
+            "train_loss": np.full(n, 1e26),
+            "grad_norm": np.full(n, np.inf),
+            "lr": 5e7,
+        }
+    )
+    findings = gs.lint(df)
+    assert not _has(findings, "plateau"), f"blow-up misdiagnosed as plateau: {findings}"
+    assert _has(findings, "inf"), "should flag the inf grad instead"
+
+
 def test_hf_adapter_feeds_monitor():
     """The HF callback's core feed turns HF-style on_log dicts into Monitor rows
     (step from state, val carried forward) and surfaces a real failure — verified
