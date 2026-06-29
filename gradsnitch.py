@@ -25,10 +25,11 @@ class Finding:
     evidence: str  # concrete: which steps / values
     likely_cause: str
     suggestion: str
+    code: str = ""  # stable rule id (GS001…), stamped by lint() from the registry
 
     def __str__(self) -> str:
         return (
-            f"[{self.severity.upper()}] {self.name}\n"
+            f"[{self.code}] [{self.severity.upper()}] {self.name}\n"
             f"  evidence: {self.evidence}\n"
             f"  likely:   {self.likely_cause}\n"
             f"  try:      {self.suggestion}"
@@ -201,13 +202,15 @@ def detect_loss_divergence(
     )
 
 
+# (stable rule id, detector). IDs are permanent — config/suppressions pin to them,
+# so never renumber. Add a new rule with the next free GS number.
 DETECTORS = [
-    detect_nonfinite_loss,
-    detect_nonfinite_grad,
-    detect_grad_spike,
-    detect_overfitting,
-    detect_loss_plateau,
-    detect_loss_divergence,
+    ("GS001", detect_nonfinite_loss),
+    ("GS002", detect_nonfinite_grad),
+    ("GS003", detect_grad_spike),
+    ("GS004", detect_overfitting),
+    ("GS005", detect_loss_plateau),
+    ("GS006", detect_loss_divergence),
 ]
 
 
@@ -247,7 +250,13 @@ def lint(df: pd.DataFrame) -> list[Finding]:
         return []  # nothing to diagnose beats a KeyError
     if "step" in df:  # detectors assume ascending order; real exports aren't sorted
         df = df.sort_values("step").reset_index(drop=True)
-    return [f for d in DETECTORS if (f := d(df)) is not None]
+    out = []
+    for code, d in DETECTORS:
+        f = d(df)
+        if f is not None:
+            f.code = code  # stamp the stable id from the registry
+            out.append(f)
+    return out
 
 
 def lint_csv(path: str) -> list[Finding]:
@@ -315,8 +324,8 @@ class Monitor:
         # step 500,1000,... (logging_steps), where step % check_every fires erratically
         if self.check_every and len(self.rows) % self.check_every == 0:
             for f in lint(self.df()):
-                if f.severity == "error" and f.name not in self._announced:
-                    self._announced.add(f.name)
+                if f.severity == "error" and f.code not in self._announced:
+                    self._announced.add(f.code)
                     print(f"\n[snitch] {f}\n")
         return self
 
