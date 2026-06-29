@@ -59,14 +59,19 @@ def detect_nonfinite_loss(df: pd.DataFrame) -> Finding | None:
 def detect_nonfinite_grad(df: pd.DataFrame) -> Finding | None:
     if "grad_norm" not in df:
         return None
-    bad = df[~np.isfinite(df["grad_norm"])]
+    g = df["grad_norm"]
+    bad = g[
+        np.isinf(g)
+    ]  # NaN = framework didn't log it here (absent), not a blow-up; only inf is
     if bad.empty:
         return None
-    step = int(bad.iloc[0]["step"])  # grads often overflow before the loss does
+    step = int(
+        df.loc[bad.index[0], "step"]
+    )  # grads often overflow before the loss does
     return Finding(
-        name="Gradient norm is inf/NaN",
+        name="Gradient norm exploded (inf)",
         severity="error",
-        evidence=f"grad_norm non-finite first at step {step}",
+        evidence=f"grad_norm is inf first at step {step}",
         likely_cause="Exploding gradients — overflow before the loss shows it.",
         suggestion="Add/tighten grad clipping (max_norm=1.0), lower LR, "
         "check inputs; use bf16 over fp16.",
@@ -131,8 +136,9 @@ def detect_overfitting(
 def detect_loss_plateau(
     df: pd.DataFrame, frac: float = 0.2, t_thresh: float = 4.0
 ) -> Finding | None:
-    if "grad_norm" in df and not np.isfinite(df["grad_norm"]).all():
-        return None  # exploding grads -> a blow-up, not a low-LR plateau (detect_nonfinite_grad owns it)
+    if "grad_norm" in df and bool(np.isinf(df["grad_norm"]).any()):
+        return None  # exploding (inf) grads -> blow-up, not a low-LR plateau (GS002 owns it).
+        # NaN (grad simply not logged this step) must NOT suppress plateau run-wide.
     s = df["train_loss"].astype(float)
     s = s[np.isfinite(s)]
     n = len(s)
@@ -248,8 +254,13 @@ def lint(df: pd.DataFrame) -> list[Finding]:
     df = normalize(df)
     if df.empty or "train_loss" not in df:
         return []  # nothing to diagnose beats a KeyError
-    if "step" in df:  # detectors assume ascending order; real exports aren't sorted
-        df = df.sort_values("step").reset_index(drop=True)
+    if (
+        "step" not in df
+    ):  # loss-only exports: synthesize a step so detectors don't KeyError
+        df = df.assign(step=range(len(df)))
+    df = df.sort_values("step").reset_index(
+        drop=True
+    )  # detectors assume ascending order
     out = []
     for code, d in DETECTORS:
         f = d(df)

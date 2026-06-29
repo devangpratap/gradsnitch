@@ -77,7 +77,12 @@ def lightning(check_every: int = 0):
                 stash["grad_norm"] = None  # degrade to loss-only
 
         def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-            metrics = {k: float(v) for k, v in trainer.callback_metrics.items()}
+            metrics = {}
+            for k, v in trainer.callback_metrics.items():
+                try:
+                    metrics[k] = float(v)
+                except (TypeError, ValueError):
+                    pass  # skip non-scalar logged metrics rather than crash the callback
             if stash["grad_norm"] is not None:
                 metrics["grad_norm"] = stash["grad_norm"]
             _feed(mon, trainer.global_step, metrics, pending)

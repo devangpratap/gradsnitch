@@ -260,6 +260,36 @@ def test_huge_flat_loss_not_misdiagnosed_as_plateau():
     assert _has(findings, "inf"), "should flag the inf grad instead"
 
 
+def test_partial_grad_norm_is_not_a_blowup():
+    """Lightning emits grad_norm optionally (degrade / grad-accum warmup), so a healthy
+    run has some rows with grad_norm missing (NaN). Absent != exploded — must stay
+    silent (no false GS002, and plateau not suppressed run-wide)."""
+    import gradsnitch as gs
+    import numpy as np
+
+    df = gs._synthetic("clean").copy()
+    df.loc[[5, 17, 33], "grad_norm"] = (
+        np.nan
+    )  # framework just didn't log it those steps
+    assert gs.lint(df) == [], f"absent grad_norm misread as a failure: {gs.lint(df)}"
+
+
+def test_loss_only_csv_diagnoses_not_crash():
+    """A bare `loss` column (no step/grad) containing a NaN must be diagnosed, not
+    crash on a missing 'step' column."""
+    import tempfile
+    import os
+    import gradsnitch as gs
+
+    fd, path = tempfile.mkstemp(suffix=".csv")
+    with os.fdopen(fd, "w") as f:
+        f.write("loss\n1.0\n0.5\n0.4\nnan\n")
+    try:
+        assert _has(gs.lint_csv(path), "nan"), "loss-only NaN not diagnosed"
+    finally:
+        os.unlink(path)
+
+
 def test_shared_feed_handles_framework_streams():
     """The shared _feed (used by hf/lightning/keras adapters) turns framework-style
     metric dicts into Monitor rows — step supplied by the adapter, val carried
