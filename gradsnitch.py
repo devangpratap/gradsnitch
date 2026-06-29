@@ -194,11 +194,18 @@ DETECTORS = [
 def lint(df: pd.DataFrame) -> list[Finding]:
     if df.empty or "train_loss" not in df:
         return []  # nothing to diagnose beats a KeyError
+    if (
+        "step" in df
+    ):  # detectors assume ascending order; real exports aren't guaranteed sorted
+        df = df.sort_values("step").reset_index(drop=True)
     return [f for d in DETECTORS if (f := d(df)) is not None]
 
 
 def lint_csv(path: str) -> list[Finding]:
-    return lint(pd.read_csv(path))
+    df = pd.read_csv(path)
+    if "train_loss" not in df:  # don't silently say "all clear" on the wrong columns
+        raise ValueError(f"{path}: need a 'train_loss' column; got {list(df.columns)}")
+    return lint(df)
 
 
 # --- seamless capture: one-line in-loop monitor (no copy-paste, no heavy deps) ---

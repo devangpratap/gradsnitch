@@ -169,6 +169,45 @@ def test_short_noisy_learner_not_plateau():
     )
 
 
+# --- regression rigs for messy real exports (the lint_csv / ordering bugs) ---
+
+
+def test_unsorted_export_is_sorted_first():
+    """Real exports can arrive step-shuffled (async/resume/multi-worker). Detectors
+    assume ascending order, so lint() must sort — else evidence and even which
+    findings fire go wrong."""
+    import gradsnitch as gs
+
+    df = gs._synthetic("nan")  # NaN actually starts at step 250
+    shuf = df.sample(frac=1.0, random_state=1).reset_index(drop=True)
+    assert [f.name for f in gs.lint(df)] == [f.name for f in gs.lint(shuf)], (
+        "shuffling the rows changed the diagnosis"
+    )
+    nan = next(f for f in gs.lint(shuf) if "NaN" in f.name)
+    assert "step 250" in nan.evidence, f"wrong step after shuffle: {nan.evidence}"
+
+
+def test_malformed_csv_raises_not_silent():
+    """Wrong columns must error loudly — a diagnoser answering 'all clear' on bad
+    input is the worst possible failure."""
+    import tempfile
+    import os
+    import gradsnitch as gs
+
+    fd, path = tempfile.mkstemp(suffix=".csv")
+    with os.fdopen(fd, "w") as f:
+        f.write("step,loss\n0,1.0\n1,0.9\n")
+    try:
+        raised = False
+        try:
+            gs.lint_csv(path)
+        except ValueError:
+            raised = True
+        assert raised, "lint_csv silently returned on a CSV missing train_loss"
+    finally:
+        os.unlink(path)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
