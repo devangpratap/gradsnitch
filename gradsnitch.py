@@ -104,27 +104,38 @@ def detect_overfitting(df: pd.DataFrame, patience: int = 100) -> Finding | None:
 
 
 def detect_loss_plateau(
-    df: pd.DataFrame, frac: float = 0.2, min_rel_drop: float = 0.05
+    df: pd.DataFrame, frac: float = 0.2, t_thresh: float = 4.0
 ) -> Finding | None:
     s = df["train_loss"].astype(float)
     s = s[np.isfinite(s)]
     n = len(s)
     if n < 30:
         return None
-    w = max(20, int(n * frac))
-    start = float(s.iloc[:10].median())
-    end = float(s.iloc[max(0, w - 10) : w].median())
-    if start == 0:
+    w = max(30, int(n * frac))
+    ys = s.to_numpy()[:w]
+    scale = float(np.mean(ys[: max(5, w // 4)]))
+    if scale == 0:
         return None
-    rel_drop = (start - end) / abs(start)
-    if rel_drop >= min_rel_drop:
+    # Significance test on the early-window trend: fit a line, then ask whether the
+    # slope is distinguishable from zero (|t| = |slope / SE|). A fixed % threshold
+    # can't tell "no trend" from "noise" — minibatch noise inflates any % gate — but
+    # the t-stat normalizes by the noise, so a frozen run reads as flat regardless.
+    xs = np.arange(w)
+    slope, intercept = np.polyfit(xs, ys, 1)
+    resid = ys - (slope * xs + intercept)
+    sxx = float(np.sum((xs - xs.mean()) ** 2))
+    se = float(np.sqrt(np.sum(resid**2) / (w - 2)) / np.sqrt(sxx)) if sxx else 0.0
+    t = (slope / se) if se else (0.0 if slope == 0 else float("inf"))
+    if abs(t) >= t_thresh:  # clearly trending (learning or diverging) -> not a plateau
         return None
+    rel_drop = (-slope * (w - 1)) / abs(scale)
     lr = float(df["lr"].iloc[0]) if "lr" in df else None
     return Finding(
         name="Loss plateau (no early progress)",
         severity="warning",
-        evidence=f"train_loss moved only {rel_drop * 100:.1f}% over the first {w} steps "
-        f"({start:.3f} -> {end:.3f})" + (f", lr={lr:g}" if lr is not None else ""),
+        evidence=f"train_loss trend over the first {w} steps is flat "
+        f"(slope {slope:.1e}/step, t={t:.1f}; ~{rel_drop * 100:+.1f}% modeled change)"
+        + (f", lr={lr:g}" if lr is not None else ""),
         likely_cause="LR too low, dead/poor init, frozen params, or a data/labeling issue.",
         suggestion="Raise LR (or add warmup), confirm the model is actually getting grads, "
         "and sanity-check a few batches.",

@@ -117,11 +117,10 @@ def test_divergence_from_lr_bump():
 
 
 def test_plateau_from_tiny_lr():
-    """Near-zero LR on full batches → model really can't move; loss is a flat line.
-    Full-batch on purpose: minibatch noise (~18%) alone swings the 10-step medians
-    past the 5% threshold, so a noisy frozen run reads as 'progress'. (Worth noting:
-    detect_loss_plateau compares raw medians with no smoothing — it's noise-sensitive.)"""
-    findings = _train(lr=1e-7, steps=300, full_batch=True).report()
+    """Near-zero LR → model really can't move; loss is flat. Noisy minibatches on
+    purpose: detect_loss_plateau uses a slope-significance (t) test, so zero-mean
+    minibatch noise averages out of the trend and a frozen run still reads as flat."""
+    findings = _train(lr=1e-7, steps=300).report()
     assert _has(findings, "plateau"), f"missed real plateau: {findings}"
 
 
