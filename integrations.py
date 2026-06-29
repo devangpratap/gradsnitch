@@ -130,6 +130,9 @@ def keras(check_every: int = 0):
             _feed(mon, step, metrics, pending)
 
         def on_epoch_end(self, epoch, logs=None):
+            # val-ONLY on purpose: _feed makes no row without train_loss, so this never
+            # collides with next epoch's batch-0 step (which numerically equals this step).
+            # Do NOT add train_loss here or you create a duplicate-step row.
             val = {k: v for k, v in (logs or {}).items() if k.startswith("val")}
             if val:  # surface val so it's carried onto the next train row
                 _feed(mon, (epoch + 1) * st["spe"], val, pending)
