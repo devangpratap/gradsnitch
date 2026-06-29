@@ -124,9 +124,10 @@ def test_plateau_from_tiny_lr():
     assert _has(findings, "plateau"), f"missed real plateau: {findings}"
 
 
-def test_overfit_from_tiny_dataset():
-    """8 training points, big model, many steps → really memorizes; val bottoms then rises."""
-    findings = _train(lr=0.02, n_train=8, hidden=256, steps=800, with_val=True).report()
+def test_overfit_train_down_val_up():
+    """Long training → val improves then U-turns up (~+32%) while train keeps falling.
+    The real overfit signature — not just val failing to learn (which isn't overfitting)."""
+    findings = _train(lr=0.02, n_train=1024, steps=300, with_val=True).report()
     assert _has(findings, "overfit"), f"missed real overfitting: {findings}"
 
 
@@ -134,6 +135,38 @@ def test_spike_from_corrupted_batch():
     """One batch with 100x inputs at step 200 → real gradient spike through real backprop."""
     findings = _train(lr=0.02, steps=400, spike_at=200).report()
     assert _has(findings, "spike"), f"missed real grad spike: {findings}"
+
+
+# --- negative rigs: tricky-but-healthy runs that must stay silent (the FP guards) ---
+
+
+def test_converged_noisy_val_not_overfit():
+    """Val improves then settles on a flat noisy floor (~+2% above its min) → argmin
+    lands interior by noise. Must NOT read as overfitting — val never meaningfully rose."""
+    findings = _train(
+        lr=0.02, n_train=64, hidden=256, steps=2000, with_val=True
+    ).report()
+    assert not _has(findings, "overfit"), (
+        f"false overfitting on converged val: {findings}"
+    )
+
+
+def test_terminal_spike_not_divergence():
+    """A corrupted batch near the end spikes the loss briefly, then it's over.
+    Grad spike is fair game; sustained divergence is NOT — it didn't sustain."""
+    findings = _train(lr=0.02, steps=400, spike_at=380).report()
+    assert not _has(findings, "diverg"), (
+        f"false divergence on terminal spike: {findings}"
+    )
+
+
+def test_short_noisy_learner_not_plateau():
+    """60 steps, noisy minibatches, but genuinely descending → real (slow) progress.
+    Must NOT read as a plateau just because the t-test is underpowered on short runs."""
+    findings = _train(lr=0.05, steps=60).report()
+    assert not _has(findings, "plateau"), (
+        f"false plateau on short noisy learner: {findings}"
+    )
 
 
 if __name__ == "__main__":

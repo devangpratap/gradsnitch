@@ -80,7 +80,9 @@ def detect_grad_spike(
     )
 
 
-def detect_overfitting(df: pd.DataFrame, patience: int = 100) -> Finding | None:
+def detect_overfitting(
+    df: pd.DataFrame, patience: int = 100, rel: float = 0.03
+) -> Finding | None:
     if "val_loss" not in df:
         return None
     v = df.dropna(subset=["val_loss"]).reset_index(drop=True)
@@ -91,6 +93,11 @@ def detect_overfitting(df: pd.DataFrame, patience: int = 100) -> Finding | None:
         return None  # val still improving — not overfitting
     rose_for = v["step"].iloc[-1] - v["step"].iloc[best_i]
     if rose_for < patience:
+        return None
+    best = float(v["val_loss"].iloc[best_i])
+    rose = (float(v["val_loss"].iloc[-1]) - best) / abs(best) if best else 0.0
+    train_falling = v["train_loss"].iloc[-1] < v["train_loss"].iloc[best_i]
+    if rose < rel or not train_falling:  # noise floor, or train not still descending
         return None
     return Finding(
         name="Train/val divergence (overfitting)",
@@ -153,8 +160,15 @@ def detect_loss_divergence(
     if len(tail) < win:
         return None
     lo_i = tail.idxmin()
-    lo, end = float(tail.loc[lo_i]), float(tail.iloc[-1])
-    if lo <= 0 or (end - lo) / abs(lo) < rise:
+    lo = float(tail.loc[lo_i])
+    after = tail.loc[lo_i:]
+    end = float(after.iloc[-1])
+    # sustained rise, not a terminal spike: elevated for at least `win` smoothed steps
+    if (
+        lo <= 0
+        or (end - lo) / abs(lo) < rise
+        or (after > lo * (1 + rise / 2)).sum() < win
+    ):
         return None
     step = int(df["step"].loc[lo_i])
     return Finding(
@@ -178,6 +192,8 @@ DETECTORS = [
 
 
 def lint(df: pd.DataFrame) -> list[Finding]:
+    if df.empty or "train_loss" not in df:
+        return []  # nothing to diagnose beats a KeyError
     return [f for d in DETECTORS if (f := d(df)) is not None]
 
 
@@ -241,9 +257,8 @@ class Monitor:
         self.rows.append(row)
         if self.check_every and step and step % self.check_every == 0:
             for f in lint(self.df()):
-                key = (f.name, f.evidence)
-                if f.severity == "error" and key not in self._announced:
-                    self._announced.add(key)
+                if f.severity == "error" and f.name not in self._announced:
+                    self._announced.add(f.name)
                     print(f"\n[snitch] {f}\n")
         return self
 
