@@ -196,7 +196,7 @@ def test_malformed_csv_raises_not_silent():
 
     fd, path = tempfile.mkstemp(suffix=".csv")
     with os.fdopen(fd, "w") as f:
-        f.write("step,loss\n0,1.0\n1,0.9\n")
+        f.write("step,accuracy\n0,0.5\n1,0.6\n")  # no loss column under any alias
     try:
         raised = False
         try:
@@ -206,6 +206,52 @@ def test_malformed_csv_raises_not_silent():
         assert raised, "lint_csv silently returned on a CSV missing train_loss"
     finally:
         os.unlink(path)
+
+
+def test_aliased_columns_are_normalized():
+    """Real exports name things differently (loss, learning_rate, eval_loss,
+    global_step). normalize() must map them so detectors work with no user renaming."""
+    import gradsnitch as gs
+
+    df = gs._synthetic("nan").rename(
+        columns={
+            "train_loss": "loss",
+            "lr": "learning_rate",
+            "val_loss": "eval_loss",
+            "step": "global_step",
+            "grad_norm": "train/grad_norm",
+        }
+    )
+    assert _has(gs.lint(df), "nan"), "aliased export columns were not normalized"
+    assert gs.normalize({"loss": 1.0, "learning_rate": 3e-4})["train_loss"] == 1.0, (
+        "dict normalize broken (framework adapters depend on it)"
+    )
+
+
+def test_hf_adapter_feeds_monitor():
+    """The HF callback's core feed turns HF-style on_log dicts into Monitor rows
+    (step from state, val carried forward) and surfaces a real failure — verified
+    without needing transformers installed."""
+    from integrations import _hf_feed
+    import gradsnitch as gs
+
+    mon = gs.watch()
+    pending = [None]
+    for step in range(
+        300
+    ):  # steps jump by 5 (logging_steps) — exercises step-from-state
+        loss = float("nan") if step >= 200 else 1.0 / (step + 1)
+        _hf_feed(
+            mon,
+            step * 5,
+            {"loss": loss, "grad_norm": 1.0, "learning_rate": 3e-4},
+            pending,
+        )
+    assert _has(gs.lint(mon.df()), "nan"), "HF adapter didn't surface the NaN"
+    _hf_feed(
+        mon, 9999, {"eval_loss": 0.5}, pending
+    )  # eval-only call: no train row, val stashed
+    assert pending[0] == 0.5, "eval-only on_log should carry val forward, not log a row"
 
 
 if __name__ == "__main__":

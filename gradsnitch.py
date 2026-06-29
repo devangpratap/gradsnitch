@@ -191,20 +191,49 @@ DETECTORS = [
 ]
 
 
+# Map foreign metric names (W&B/TB exports, framework log dicts) -> canonical.
+# Shared by lint() and every framework adapter — same operation, one table.
+_ALIASES = {
+    "step": ["global_step", "_step", "iteration", "train/step"],
+    "train_loss": ["loss", "train/loss", "training_loss", "train_loss_step"],
+    "val_loss": ["eval_loss", "val/loss", "validation_loss", "val_loss_epoch"],
+    "lr": ["learning_rate", "train/lr", "lr"],
+    "grad_norm": ["train/grad_norm", "gradient_norm", "total_norm"],
+}
+
+
+def normalize(d):
+    """Rename known aliases to canonical names. Works on a dict or a DataFrame
+    (both expose `in` over keys/columns and `.rename`-equivalent)."""
+    keys = d.keys() if isinstance(d, dict) else d.columns
+    ren = {}
+    for canon, aliases in _ALIASES.items():
+        if canon in keys:
+            continue
+        for a in aliases:
+            if a in keys:
+                ren[a] = canon
+                break
+    if not ren:
+        return d
+    if isinstance(d, dict):
+        return {ren.get(k, k): v for k, v in d.items()}
+    return d.rename(columns=ren)
+
+
 def lint(df: pd.DataFrame) -> list[Finding]:
+    df = normalize(df)
     if df.empty or "train_loss" not in df:
         return []  # nothing to diagnose beats a KeyError
-    if (
-        "step" in df
-    ):  # detectors assume ascending order; real exports aren't guaranteed sorted
+    if "step" in df:  # detectors assume ascending order; real exports aren't sorted
         df = df.sort_values("step").reset_index(drop=True)
     return [f for d in DETECTORS if (f := d(df)) is not None]
 
 
 def lint_csv(path: str) -> list[Finding]:
-    df = pd.read_csv(path)
+    df = normalize(pd.read_csv(path))
     if "train_loss" not in df:  # don't silently say "all clear" on the wrong columns
-        raise ValueError(f"{path}: need a 'train_loss' column; got {list(df.columns)}")
+        raise ValueError(f"{path}: need a loss column; got {list(df.columns)}")
     return lint(df)
 
 
@@ -262,7 +291,9 @@ class Monitor:
             row["val_loss"] = float(val_loss)
         row.update(extra)  # caller-supplied signals (grad_norm/lr/per-layer/...) win
         self.rows.append(row)
-        if self.check_every and step and step % self.check_every == 0:
+        # trigger on number of feeds, not step value: callback feeds arrive at
+        # step 500,1000,... (logging_steps), where step % check_every fires erratically
+        if self.check_every and len(self.rows) % self.check_every == 0:
             for f in lint(self.df()):
                 if f.severity == "error" and f.name not in self._announced:
                     self._announced.add(f.name)
