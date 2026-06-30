@@ -26,14 +26,33 @@ def _feed(mon, step, metrics, pending):
         pending[0] = None
 
 
-def hf(check_every: int = 0):
+def wandb_alert(finding):
+    """on_alert hook: push a Snitch verdict into W&B (Slack/email) when a run is live.
+
+    Use: `integrations.hf(on_alert=integrations.wandb_alert)`. wandb is imported
+    lazily, so this costs nothing unless you opt in.
+    """
+    import wandb  # lazy: optional dependency
+
+    if getattr(wandb, "run", None) is not None:
+        level = (
+            wandb.AlertLevel.ERROR
+            if finding.severity == "error"
+            else wandb.AlertLevel.WARN
+        )
+        wandb.alert(
+            title=f"[{finding.code}] {finding.name}", text=str(finding), level=level
+        )
+
+
+def hf(check_every: int = 0, mute=(), on_alert=None):
     """HuggingFace Trainer callback: `Trainer(..., callbacks=[integrations.hf()])`.
 
     HF's on_log gives loss/grad_norm/learning_rate free; step is on state.global_step.
     """
     from transformers import TrainerCallback  # lazy: optional dependency
 
-    mon = watch(check_every=check_every)
+    mon = watch(check_every=check_every, mute=mute, on_alert=on_alert)
     pending = [None]
 
     class SnitchCallback(TrainerCallback):
@@ -49,7 +68,7 @@ def hf(check_every: int = 0):
     return cb
 
 
-def lightning(check_every: int = 0):
+def lightning(check_every: int = 0, mute=(), on_alert=None):
     """PyTorch Lightning callback: `Trainer(callbacks=[integrations.lightning()])`.
 
     Lightning metrics live in `trainer.callback_metrics` as tensors (coerce to
@@ -64,7 +83,7 @@ def lightning(check_every: int = 0):
         from pytorch_lightning import Callback
         from pytorch_lightning.utilities import grad_norm as _ln_grad_norm
 
-    mon = watch(check_every=check_every)
+    mon = watch(check_every=check_every, mute=mute, on_alert=on_alert)
     pending = [None]
     stash = {"grad_norm": None}
 
@@ -103,7 +122,7 @@ def _keras_lr(model):
         return None  # LR schedules / backends that don't float cleanly -> skip
 
 
-def keras(check_every: int = 0):
+def keras(check_every: int = 0, mute=(), on_alert=None):
     """Keras callback: `model.fit(..., callbacks=[integrations.keras()])`.
 
     Keras gives loss (and val_loss at epoch end) but no grad_norm; lr comes off
@@ -112,7 +131,7 @@ def keras(check_every: int = 0):
     """
     import keras  # lazy: optional dependency
 
-    mon = watch(check_every=check_every)
+    mon = watch(check_every=check_every, mute=mute, on_alert=on_alert)
     pending = [None]
     st = {"epoch": 0, "spe": 0}
 

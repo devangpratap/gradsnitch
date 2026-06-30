@@ -226,6 +226,36 @@ def test_aliased_columns_are_normalized():
     assert gs.normalize({"loss": 1.0, "learning_rate": 3e-4})["train_loss"] == 1.0, (
         "dict normalize broken (framework adapters depend on it)"
     )
+    # W&B slash-style keys must map too
+    wb = gs._synthetic("nan").rename(
+        columns={
+            "train_loss": "train/loss",
+            "lr": "train/learning_rate",
+            "step": "trainer/global_step",
+        }
+    )
+    assert _has(gs.lint(wb), "nan"), "W&B slash-style keys not normalized"
+
+
+def test_mute_suppresses_by_rule_id():
+    """mute={GS00x} drops that rule's findings — the config use the stable IDs exist for."""
+    import gradsnitch as gs
+
+    df = gs._synthetic("nan")
+    assert _has(gs.lint(df), "nan"), "baseline should flag the NaN"
+    assert gs.lint(df, mute={"GS001"}) == [], "mute did not suppress GS001"
+
+
+def test_on_alert_hook_fires_for_live_errors():
+    """watch(on_alert=cb) calls cb(finding) for each new live error — the plumbing the
+    wandb_alert integration rides on (verified without wandb)."""
+    import gradsnitch as gs
+
+    seen = []
+    mon = gs.watch(check_every=5, on_alert=seen.append)
+    for r in gs._synthetic("nan").to_dict("records"):
+        mon.log(r["step"], r["train_loss"], grad_norm=r["grad_norm"], lr=r["lr"])
+    assert any(f.code == "GS001" for f in seen), "on_alert never fired on a live error"
 
 
 def test_inf_grad_norm_is_flagged():

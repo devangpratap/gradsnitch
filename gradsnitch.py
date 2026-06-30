@@ -181,13 +181,12 @@ def detect_loss_divergence(
     s = df["train_loss"].astype(float)
     if not np.isfinite(s).all():
         return None  # NaN is detect_nonfinite_loss's job
-    sm = s.rolling(win, min_periods=5).mean()
-    tail = sm.iloc[int(len(sm) * 0.5) :]  # sustained trend, not a single spike
-    if len(tail) < win:
+    sm = s.rolling(win, min_periods=5).mean().dropna()
+    if len(sm) < 2 * win:
         return None
-    lo_i = tail.idxmin()
-    lo = float(tail.loc[lo_i])
-    after = tail.loc[lo_i:]
+    lo_i = sm.idxmin()  # best-so-far: lowest smoothed loss (TFCheck cur/lowest_ever)
+    lo = float(sm.loc[lo_i])
+    after = sm.loc[lo_i:]
     end = float(after.iloc[-1])
     # sustained rise, not a terminal spike: elevated for at least `win` smoothed steps
     if (
@@ -223,11 +222,25 @@ DETECTORS = [
 # Map foreign metric names (W&B/TB exports, framework log dicts) -> canonical.
 # Shared by lint() and every framework adapter — same operation, one table.
 _ALIASES = {
-    "step": ["global_step", "_step", "iteration", "train/step"],
-    "train_loss": ["loss", "train/loss", "training_loss", "train_loss_step"],
-    "val_loss": ["eval_loss", "val/loss", "validation_loss", "val_loss_epoch"],
-    "lr": ["learning_rate", "train/lr"],
-    "grad_norm": ["train/grad_norm", "gradient_norm", "total_norm"],
+    "step": ["global_step", "trainer/global_step", "_step", "iteration", "train/step"],
+    "train_loss": [
+        "loss",
+        "train/loss",
+        "loss_step",
+        "training_loss",
+        "train_loss_step",
+    ],
+    "val_loss": [
+        "eval_loss",
+        "val/loss",
+        "eval/loss",
+        "validation_loss",
+        "valid_loss",
+        "val_loss_epoch",
+        "val_loss_step",
+    ],
+    "lr": ["learning_rate", "train/learning_rate", "train/lr"],
+    "grad_norm": ["train/grad_norm", "gradient_norm", "grad_norm_step", "total_norm"],
 }
 
 
@@ -250,7 +263,7 @@ def normalize(d):
     return d.rename(columns=ren)
 
 
-def lint(df: pd.DataFrame) -> list[Finding]:
+def lint(df: pd.DataFrame, mute=()) -> list[Finding]:
     df = normalize(df)
     if df.empty or "train_loss" not in df:
         return []  # nothing to diagnose beats a KeyError
@@ -263,6 +276,8 @@ def lint(df: pd.DataFrame) -> list[Finding]:
     )  # detectors assume ascending order
     out = []
     for code, d in DETECTORS:
+        if code in mute:  # suppress by stable rule id, e.g. mute={"GS003"}
+            continue
         f = d(df)
         if f is not None:
             f.code = code  # stamp the stable id from the registry
@@ -270,11 +285,11 @@ def lint(df: pd.DataFrame) -> list[Finding]:
     return out
 
 
-def lint_csv(path: str) -> list[Finding]:
+def lint_csv(path: str, mute=()) -> list[Finding]:
     df = normalize(pd.read_csv(path))
     if "train_loss" not in df:  # don't silently say "all clear" on the wrong columns
         raise ValueError(f"{path}: need a loss column; got {list(df.columns)}")
-    return lint(df)
+    return lint(df, mute=mute)
 
 
 # --- seamless capture: one-line in-loop monitor (no copy-paste, no heavy deps) ---
@@ -297,10 +312,14 @@ class Monitor:
     loads (and tests run) without torch installed.
     """
 
-    def __init__(self, model=None, optimizer=None, check_every: int = 0):
+    def __init__(
+        self, model=None, optimizer=None, check_every: int = 0, mute=(), on_alert=None
+    ):
         self.model = model
         self.optimizer = optimizer
         self.check_every = check_every  # >0: print errors live every N steps
+        self.mute = set(mute)  # suppress these rule ids (e.g. {"GS003"})
+        self.on_alert = on_alert  # optional callback(Finding) for each new live error
         self.rows: list[dict] = []
         self._announced: set = set()  # dedupe live alerts: each finding fires once
 
@@ -334,24 +353,28 @@ class Monitor:
         # trigger on number of feeds, not step value: callback feeds arrive at
         # step 500,1000,... (logging_steps), where step % check_every fires erratically
         if self.check_every and len(self.rows) % self.check_every == 0:
-            for f in lint(self.df()):
+            for f in lint(self.df(), mute=self.mute):
                 if f.severity == "error" and f.code not in self._announced:
                     self._announced.add(f.code)
                     print(f"\n[snitch] {f}\n")
+                    if self.on_alert:  # e.g. push to wandb.alert / Slack
+                        self.on_alert(f)
         return self
 
     def df(self) -> pd.DataFrame:
         return pd.DataFrame(self.rows)
 
     def report(self) -> list[Finding]:
-        findings = lint(self.df())
+        findings = lint(self.df(), mute=self.mute)
         for f in findings:
             print(f, "\n")
         return findings
 
 
-def watch(model=None, optimizer=None, check_every: int = 0) -> Monitor:
-    return Monitor(model, optimizer, check_every)
+def watch(
+    model=None, optimizer=None, check_every: int = 0, mute=(), on_alert=None
+) -> Monitor:
+    return Monitor(model, optimizer, check_every, mute=mute, on_alert=on_alert)
 
 
 # --- self-check / demo: synthetic broken runs ---
