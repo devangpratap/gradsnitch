@@ -5,6 +5,9 @@ module stays torch-optional. The reusable unit is the shared `_feed` (name
 mapping via normalize() + carry-val-forward + one Monitor row); every adapter
 just does its framework-specific *extraction* (where step / metrics / grad_norm
 live) and calls `_feed`. Monitor stays the single sink for dedup / live / report.
+
+Every factory (hf/lightning/keras) forwards **watch_kw to watch(), so you can pass
+`mute={"GS003"}` or `on_alert=integrations.wandb_alert` to any of them.
 """
 
 from gradsnitch import watch, normalize
@@ -45,14 +48,14 @@ def wandb_alert(finding):
         )
 
 
-def hf(check_every: int = 0, mute=(), on_alert=None):
+def hf(check_every: int = 0, **watch_kw):
     """HuggingFace Trainer callback: `Trainer(..., callbacks=[integrations.hf()])`.
 
     HF's on_log gives loss/grad_norm/learning_rate free; step is on state.global_step.
     """
     from transformers import TrainerCallback  # lazy: optional dependency
 
-    mon = watch(check_every=check_every, mute=mute, on_alert=on_alert)
+    mon = watch(check_every=check_every, **watch_kw)
     pending = [None]
 
     class SnitchCallback(TrainerCallback):
@@ -68,7 +71,7 @@ def hf(check_every: int = 0, mute=(), on_alert=None):
     return cb
 
 
-def lightning(check_every: int = 0, mute=(), on_alert=None):
+def lightning(check_every: int = 0, **watch_kw):
     """PyTorch Lightning callback: `Trainer(callbacks=[integrations.lightning()])`.
 
     Lightning metrics live in `trainer.callback_metrics` as tensors (coerce to
@@ -83,7 +86,7 @@ def lightning(check_every: int = 0, mute=(), on_alert=None):
         from pytorch_lightning import Callback
         from pytorch_lightning.utilities import grad_norm as _ln_grad_norm
 
-    mon = watch(check_every=check_every, mute=mute, on_alert=on_alert)
+    mon = watch(check_every=check_every, **watch_kw)
     pending = [None]
     stash = {"grad_norm": None}
 
@@ -122,7 +125,7 @@ def _keras_lr(model):
         return None  # LR schedules / backends that don't float cleanly -> skip
 
 
-def keras(check_every: int = 0, mute=(), on_alert=None):
+def keras(check_every: int = 0, **watch_kw):
     """Keras callback: `model.fit(..., callbacks=[integrations.keras()])`.
 
     Keras gives loss (and val_loss at epoch end) but no grad_norm; lr comes off
@@ -131,7 +134,7 @@ def keras(check_every: int = 0, mute=(), on_alert=None):
     """
     import keras  # lazy: optional dependency
 
-    mon = watch(check_every=check_every, mute=mute, on_alert=on_alert)
+    mon = watch(check_every=check_every, **watch_kw)
     pending = [None]
     st = {"epoch": 0, "spe": 0}
 
