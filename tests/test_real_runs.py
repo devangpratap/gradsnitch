@@ -1,6 +1,6 @@
 """Real-run validation harness — the test that actually has signal.
 
-The self-check in gradsnitch.py runs on synthetic CSVs *shaped to trigger* each
+The self-check in gradsnitch/__init__.py runs on synthetic CSVs *shaped to trigger* each
 detector: it proves the wiring, not the diagnosis. That's nearly circular.
 
 This harness trains real (tiny) torch models that break through real mechanisms
@@ -324,7 +324,7 @@ def test_shared_feed_handles_framework_streams():
     """The shared _feed (used by hf/lightning/keras adapters) turns framework-style
     metric dicts into Monitor rows — step supplied by the adapter, val carried
     forward — and surfaces a real failure. Verified without any framework installed."""
-    from integrations import _feed
+    from gradsnitch.integrations import _feed
     import gradsnitch as gs
 
     mon = gs.watch()
