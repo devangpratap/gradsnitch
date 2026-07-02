@@ -11,6 +11,15 @@ worse than none.
 > ⚠️ Early/personal project, not production-hardened. Thresholds are tuned on the
 > bundled real-run rigs; weird curves (RL/GAN/restarts) may still surprise it.
 
+## Install
+
+Not on PyPI yet — install from a clone:
+
+```bash
+pip install -e .            # core (numpy + pandas)
+pip install -e ".[torch]"   # + torch, for watch()/framework adapters
+```
+
 ## Use
 
 Raw PyTorch loop — one line:

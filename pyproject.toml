@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gradsnitch"
+version = "0.1.0"
+description = "A linter/diagnoser for ML training runs — plain-language verdicts on why it broke."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Devang Pratap" }]
+keywords = ["machine-learning", "training", "diagnostics", "pytorch", "debugging"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Intended Audience :: Developers",
+]
+dependencies = ["numpy", "pandas"]
+
+[project.optional-dependencies]
+# `watch()`/adapters need torch; frameworks (transformers/lightning/keras/wandb) stay
+# lazy so they're never hard deps. `dev` is the test/lint toolchain.
+torch = ["torch"]
+dev = ["torch", "pytest", "ruff"]
+
+# The gradsnitch package: core in __init__.py, framework adapters in integrations.py.
+[tool.setuptools]
+packages = ["gradsnitch"]
+
+[tool.pytest.ini_options]
+# Scope collection to tests/ so a sibling clone (e.g. unsloth/) can't hijack the run.
+testpaths = ["tests"]

@@ -440,8 +440,4 @@ def _selfcheck() -> None:
     print("selfcheck ok")
 
 
-if __name__ == "__main__":
-    _selfcheck()
-    print("\n--- demo: a known-broken run (grad spike) ---")
-    for f in lint(_synthetic("spike")):
-        print(f, "\n")
+# selfcheck/demo entrypoint lives in __main__.py so `python -m gradsnitch` runs it.
