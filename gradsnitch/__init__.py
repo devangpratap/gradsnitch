@@ -207,6 +207,42 @@ def detect_loss_divergence(
     )
 
 
+def detect_vanishing_grad(
+    df: pd.DataFrame, collapse: float = 0.05, stuck: float = 0.2
+) -> Finding | None:
+    if "grad_norm" not in df:
+        return None
+    g = df["grad_norm"].astype(float)
+    g = g[np.isfinite(g)]  # inf is GS002's job; NaN = not logged this step
+    if len(g) < 40:
+        return None
+    w = max(10, len(g) // 5)  # first/last 20%
+    g_early = float(np.median(g.iloc[:w]))
+    g_late = float(np.median(g.iloc[-w:]))
+    if g_early <= 0 or g_late >= collapse * g_early:
+        return None  # grads didn't collapse
+    # Shrinking grads are healthy IF the loss actually fell — that's convergence,
+    # not vanishing. Only flag when the loss is still stuck near its starting value.
+    s = df["train_loss"].astype(float)
+    s = s[np.isfinite(s)]
+    l_early = float(np.median(s.iloc[:w]))
+    l_late = float(np.median(s.iloc[-w:]))
+    if l_early == 0 or (l_early - l_late) / abs(l_early) >= stuck:
+        return None  # loss made real progress -> grads shrinking is convergence
+    step = int(df["step"].iloc[-w])
+    return Finding(
+        name="Vanishing gradients",
+        severity="warning",
+        evidence=f"grad_norm collapsed to {g_late:.1e} (~{g_late / g_early * 100:.0f}% "
+        f"of its early {g_early:.1e}) by step {step} while train_loss stayed stuck "
+        f"({l_early:.3f} -> {l_late:.3f}).",
+        likely_cause="Vanishing gradients — dead/saturated units, too-deep stack "
+        "without residuals/norm, or LR far too low.",
+        suggestion="Check init/normalization and activations (dead ReLU?), add "
+        "residual connections or normalization, or raise LR.",
+    )
+
+
 # (stable rule id, detector). IDs are permanent — config/suppressions pin to them,
 # so never renumber. Add a new rule with the next free GS number.
 DETECTORS = [
@@ -216,6 +252,7 @@ DETECTORS = [
     ("GS004", detect_overfitting),
     ("GS005", detect_loss_plateau),
     ("GS006", detect_loss_divergence),
+    ("GS007", detect_vanishing_grad),
 ]
 
 
@@ -402,6 +439,10 @@ def _synthetic(kind: str, n: int = 400) -> pd.DataFrame:
         base[200:] = base[200] + (step[200:] - 200) * 0.01
         loss = base + rng.normal(0, 0.02, n)
         val = loss + 0.05
+    elif kind == "vanish":  # grads decay to ~0, loss stays stuck (no progress)
+        loss = 2.8 + rng.normal(0, 0.02, n)
+        val = loss + 0.05
+        grad = np.abs(1.0 * np.exp(-step / 40) + rng.normal(0, 0.005, n))
     return pd.DataFrame(
         {"step": step, "train_loss": loss, "grad_norm": grad, "lr": lr, "val_loss": val}
     )
@@ -420,6 +461,13 @@ def _selfcheck() -> None:
     )
     assert any("diverg" in f.name.lower() for f in lint(_synthetic("diverge"))), (
         "missed divergence"
+    )
+    assert any("vanish" in f.name.lower() for f in lint(_synthetic("vanish"))), (
+        "missed vanishing grads"
+    )
+    # convergence must NOT read as vanishing: clean run's grads are steady, loss falls
+    assert not any("vanish" in f.name.lower() for f in lint(_synthetic("clean"))), (
+        "false vanishing on a converging run"
     )
     clean = lint(_synthetic("clean"))
     assert clean == [], f"false positive on clean run: {clean}"

@@ -137,6 +137,29 @@ def test_spike_from_corrupted_batch():
     assert _has(findings, "spike"), f"missed real grad spike: {findings}"
 
 
+def test_vanishing_grad_from_deep_saturated_net():
+    """Deep sigmoid stack: grads start healthy, then the sigmoids drift into
+    saturation during training, so grad_norm really collapses (~0.4 -> 2e-4) while
+    the loss can't move. Progressive vanishing — the real GS007 signature."""
+    torch.manual_seed(0)
+    layers = []
+    for _ in range(6):  # deep enough that saturation kills the gradient through it
+        layers += [torch.nn.Linear(16, 16), torch.nn.Sigmoid()]
+    model = torch.nn.Sequential(*layers, torch.nn.Linear(16, 1))
+    x, y = _data(512, seed=0)
+    opt = torch.optim.SGD(model.parameters(), lr=0.2)
+    lossf = torch.nn.MSELoss()
+    mon = gradsnitch.watch(model, opt)
+    for step in range(400):
+        opt.zero_grad()
+        loss = lossf(model(x), y)
+        loss.backward()
+        mon.log(step, loss.item())
+        opt.step()
+    findings = mon.report()
+    assert _has(findings, "vanish"), f"missed real vanishing gradients: {findings}"
+
+
 # --- negative rigs: tricky-but-healthy runs that must stay silent (the FP guards) ---
 
 
