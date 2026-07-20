@@ -160,6 +160,20 @@ def test_vanishing_grad_from_deep_saturated_net():
     assert _has(findings, "vanish"), f"missed real vanishing gradients: {findings}"
 
 
+def test_low_lr_shows_in_update_ratio():
+    """LR 1e-5: real ||ΔW||/||W|| lands ~1e-5, far below the healthy ~1e-3. The
+    update-ratio verdict names the cause plateau (GS005) only hints at."""
+    findings = _train(lr=1e-5, steps=300).report()
+    assert _has(findings, "lr too low"), f"missed real low-LR ratio: {findings}"
+
+
+def test_high_lr_shows_in_update_ratio():
+    """LR 0.15: updates run ~1e-2 of the weights (too big) but the run stays finite,
+    so NaN/spike detectors don't fire — the update ratio is what catches it."""
+    findings = _train(lr=0.15, steps=300).report()
+    assert _has(findings, "lr too high"), f"missed real high-LR ratio: {findings}"
+
+
 # --- negative rigs: tricky-but-healthy runs that must stay silent (the FP guards) ---
 
 

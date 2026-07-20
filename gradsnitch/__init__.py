@@ -243,6 +243,40 @@ def detect_vanishing_grad(
     )
 
 
+def detect_update_ratio(
+    df: pd.DataFrame, low: float = -4.0, high: float = -2.0, skip: float = 0.1
+) -> Finding | None:
+    # Karpathy's rule of thumb: healthy log10(||ΔW||/||W||) sits near -3. Only fires
+    # on the update_ratio signal watch(model, optimizer) captures — absent for
+    # csv/log-only users, so it stays silent rather than guessing. Band [-4,-2] is
+    # deliberately wide: a wrong LR verdict is worse than none.
+    if "update_ratio" not in df:
+        return None
+    r = df["update_ratio"].astype(float)
+    r = r[np.isfinite(r) & (r > 0)]
+    if len(r) < 30:
+        return None
+    r = r.iloc[int(len(r) * skip) :]  # drop warmup: early ratios swing wildly
+    med = float(np.median(np.log10(r)))
+    if low <= med <= high:
+        return None  # healthy
+    too_high = med > high
+    return Finding(
+        name="LR too high (update/weight ratio)"
+        if too_high
+        else "LR too low (update/weight ratio)",
+        severity="warning",
+        evidence=f"median update/weight ratio ~1e{med:.1f} "
+        f"({'above' if too_high else 'below'} the healthy ~1e-3; "
+        f"band is 1e{high:.0f}..1e{low:.0f}).",
+        likely_cause="Each step moves the weights "
+        + ("too much — LR too high." if too_high else "too little — LR too low."),
+        suggestion="Lower the LR (or add clipping)."
+        if too_high
+        else "Raise the LR (or add warmup); check params are actually training.",
+    )
+
+
 # (stable rule id, detector). IDs are permanent — config/suppressions pin to them,
 # so never renumber. Add a new rule with the next free GS number.
 DETECTORS = [
@@ -253,6 +287,7 @@ DETECTORS = [
     ("GS005", detect_loss_plateau),
     ("GS006", detect_loss_divergence),
     ("GS007", detect_vanishing_grad),
+    ("GS008", detect_update_ratio),
 ]
 
 
@@ -359,6 +394,7 @@ class Monitor:
         self.on_alert = on_alert  # optional callback(Finding) for each new live error
         self.rows: list[dict] = []
         self._announced: set = set()  # dedupe live alerts: each finding fires once
+        self._prev_params = None  # last step's params, for the update/weight ratio
 
     def _grad_norm(self):
         if self.model is None:
@@ -375,6 +411,23 @@ class Monitor:
         groups = getattr(self.optimizer, "param_groups", None)
         return float(groups[0]["lr"]) if groups else None
 
+    def _update_ratio(self):
+        # ||ΔW|| / ||W|| across one optimizer step (Karpathy's ~1e-3 rule). Uses the
+        # actual param delta, not lr*grad — Adam's update isn't lr*grad. First call
+        # has no baseline -> None. ponytail: keeps one model-sized snapshot; that's
+        # small next to the optimizer state (Adam already holds ~2x the params), and
+        # only when a model is passed. Torch stays duck-typed (no import here).
+        if self.model is None:
+            return None
+        cur = [p.detach() for p in self.model.parameters()]
+        prev = self._prev_params
+        self._prev_params = [c.clone() for c in cur]
+        if prev is None or len(prev) != len(cur):
+            return None
+        num = sum(float((c - p).norm()) ** 2 for c, p in zip(cur, prev))
+        den = sum(float(p.norm()) ** 2 for p in prev)
+        return (num**0.5) / (den**0.5) if den > 0 else None
+
     def log(self, step: int, loss: float, val_loss: float | None = None, **extra):
         row = {"step": int(step), "train_loss": float(loss)}
         gn = self._grad_norm()
@@ -383,6 +436,9 @@ class Monitor:
         lr = self._lr()
         if lr is not None:
             row["lr"] = lr
+        ur = self._update_ratio()
+        if ur is not None:
+            row["update_ratio"] = ur
         if val_loss is not None:
             row["val_loss"] = float(val_loss)
         row.update(extra)  # caller-supplied signals (grad_norm/lr/per-layer/...) win
@@ -424,6 +480,11 @@ def _synthetic(kind: str, n: int = 400) -> pd.DataFrame:
     grad = np.abs(rng.normal(1.0, 0.2, n))
     lr = np.full(n, 3e-4)
     val = loss + 0.05
+    ratio = np.full(n, 1e-3)  # healthy update/weight ratio (Karpathy's ~1e-3)
+    if kind == "hotlr":  # updates far too big relative to weights
+        ratio = np.full(n, 5e-2) * np.abs(rng.normal(1.0, 0.05, n))
+    elif kind == "coldlr":  # updates far too small
+        ratio = np.full(n, 1e-5) * np.abs(rng.normal(1.0, 0.05, n))
     if kind == "nan":
         loss[250:] = np.nan
     elif kind == "spike":
@@ -444,7 +505,14 @@ def _synthetic(kind: str, n: int = 400) -> pd.DataFrame:
         val = loss + 0.05
         grad = np.abs(1.0 * np.exp(-step / 40) + rng.normal(0, 0.005, n))
     return pd.DataFrame(
-        {"step": step, "train_loss": loss, "grad_norm": grad, "lr": lr, "val_loss": val}
+        {
+            "step": step,
+            "train_loss": loss,
+            "grad_norm": grad,
+            "lr": lr,
+            "val_loss": val,
+            "update_ratio": ratio,
+        }
     )
 
 
@@ -468,6 +536,12 @@ def _selfcheck() -> None:
     # convergence must NOT read as vanishing: clean run's grads are steady, loss falls
     assert not any("vanish" in f.name.lower() for f in lint(_synthetic("clean"))), (
         "false vanishing on a converging run"
+    )
+    assert any("too high" in f.name.lower() for f in lint(_synthetic("hotlr"))), (
+        "missed high-LR update ratio"
+    )
+    assert any("too low" in f.name.lower() for f in lint(_synthetic("coldlr"))), (
+        "missed low-LR update ratio"
     )
     clean = lint(_synthetic("clean"))
     assert clean == [], f"false positive on clean run: {clean}"

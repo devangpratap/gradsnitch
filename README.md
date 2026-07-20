@@ -67,6 +67,7 @@ pushes verdicts into W&B (Slack/email) on a live run.
 | GS005 | Loss plateau | no early progress (slope-significance t-test) |
 | GS006 | Loss divergence | sustained rise above the run's best |
 | GS007 | Vanishing gradients | grad_norm collapses while loss stays stuck |
+| GS008 | Update/weight ratio off | LR too high/low (Karpathy's ~1e-3), via `watch()` |
 
 Rule IDs are stable (suppress/config pin to them). Example verdict:
 
@@ -85,16 +86,16 @@ Rule IDs are stable (suppress/config pin to them). Example verdict:
   (duck-typed); each framework imported lazily.
 - **The harness is the moat.** `tests/test_real_runs.py` trains tiny *real* torch
   models that break through real mechanisms (LR 1e4→NaN, 8-pt set→overfit,
-  frozen→plateau, corrupted batch→spike, deep-sigmoid→vanishing) **plus negative
-  rigs** that must stay silent (converged val, terminal spike, short noisy learner). 20 rigs; correctness
+  frozen→plateau, corrupted batch→spike, deep-sigmoid→vanishing, tiny/big LR→update
+  ratio off) **plus negative rigs** that must stay silent (converged val, terminal
+  spike, short noisy learner). 22 rigs; correctness
   here is emergent across adapters, so this is where the value lives.
 
 ## What could be added (roadmap, not done)
 
 - **More detectors:** loss-oscillation (RL/GAN — ships last, needs a strict gate +
-  GAN negative rig), update-to-weight ratio (Karpathy's 1e-3 rule, via `watch()`),
-  dead-ReLU / saturation from activation hooks (the metrics-only cousin — grad_norm
-  collapse — already ships as GS007).
+  GAN negative rig), dead-ReLU / saturation from activation hooks (the metrics-only
+  cousin — grad_norm collapse — already ships as GS007).
 - **v2 flagship — Cockpit's Alpha (α):** a principled "LR too high/low" verdict
   from the loss curvature along the update direction. Needs per-sample grads, so
   it's intrusive (breaks log-only/torch-optional) — a separate opt-in mode.
