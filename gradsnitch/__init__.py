@@ -277,6 +277,57 @@ def detect_update_ratio(
     )
 
 
+def detect_loss_oscillation(
+    df: pd.DataFrame,
+    win: int = 11,
+    min_reversals: int = 6,
+    grow: float = 1.6,
+    skip: float = 0.1,
+) -> Finding | None:
+    # Only flags oscillation with GROWING amplitude — unambiguously unstable. A
+    # constant-amplitude oscillation (normal for GANs/RL) or a decaying one (a run
+    # settling) stays silent, and minibatch noise is smoothed out first. This gate is
+    # what keeps a wrong "LR too high" off healthy adversarial runs.
+    s = df["train_loss"].astype(float)
+    s = s[np.isfinite(s)]
+    n = len(s)
+    if n < 60:
+        return None
+    s = s.iloc[int(n * skip) :]  # drop warmup
+    sm = s.rolling(win, min_periods=win).mean().dropna().to_numpy()
+    if len(sm) < 4 * win:
+        return None
+    sign = np.sign(np.diff(sm))
+    sign = sign[sign != 0]
+    reversals = int(np.sum(sign[1:] != sign[:-1]))
+    if reversals < min_reversals:
+        return None  # converging/noisy runs rarely reverse once smoothed
+
+    def _amp(seg):  # swing size = spread AROUND the local trend, not the trend itself
+        xs = np.arange(
+            len(seg)
+        )  # so a productive late descent isn't mistaken for a swing
+        slope, intercept = np.polyfit(xs, seg, 1)
+        return float(np.ptp(seg - (slope * xs + intercept)))
+
+    third = len(sm) // 3
+    amp_early = _amp(sm[:third])
+    amp_late = _amp(sm[-third:])
+    if amp_early <= 0 or amp_late < grow * amp_early:
+        return None  # constant/decaying amplitude = healthy osc or settling
+    step = int(df["step"].iloc[-1])
+    return Finding(
+        name="Loss oscillation (growing amplitude)",
+        severity="warning",
+        evidence=f"smoothed train_loss swings grew {amp_early:.3f} -> {amp_late:.3f} "
+        f"(~{amp_late / amp_early:.1f}x) over {reversals} direction reversals by step {step}.",
+        likely_cause="Unstable updates bouncing across the minimum with growing swings "
+        "— usually LR too high.",
+        suggestion="Lower the LR or add warmup/decay; add grad clipping. "
+        "Constant-amplitude oscillation (GANs/RL) is normal and not flagged.",
+    )
+
+
 # (stable rule id, detector). IDs are permanent — config/suppressions pin to them,
 # so never renumber. Add a new rule with the next free GS number.
 DETECTORS = [
@@ -288,6 +339,7 @@ DETECTORS = [
     ("GS006", detect_loss_divergence),
     ("GS007", detect_vanishing_grad),
     ("GS008", detect_update_ratio),
+    ("GS009", detect_loss_oscillation),
 ]
 
 
@@ -504,6 +556,12 @@ def _synthetic(kind: str, n: int = 400) -> pd.DataFrame:
         loss = 2.8 + rng.normal(0, 0.02, n)
         val = loss + 0.05
         grad = np.abs(1.0 * np.exp(-step / 40) + rng.normal(0, 0.005, n))
+    elif kind == "osc":  # growing-amplitude oscillation, flat mean -> unstable
+        loss = 1.0 + (0.05 + step / n * 0.9) * np.sin(step / 3) + rng.normal(0, 0.02, n)
+        val = loss + 0.05
+    elif kind == "healthy_osc":  # constant-amplitude (GAN/RL) -> must stay silent
+        loss = 1.0 + 0.2 * np.sin(step / 3) + rng.normal(0, 0.02, n)
+        val = loss + 0.05
     return pd.DataFrame(
         {
             "step": step,
@@ -543,6 +601,13 @@ def _selfcheck() -> None:
     assert any("too low" in f.name.lower() for f in lint(_synthetic("coldlr"))), (
         "missed low-LR update ratio"
     )
+    assert any("oscillation" in f.name.lower() for f in lint(_synthetic("osc"))), (
+        "missed growing-amplitude oscillation"
+    )
+    # constant-amplitude oscillation (GAN/RL) is healthy — must NOT be flagged
+    assert not any(
+        "oscillation" in f.name.lower() for f in lint(_synthetic("healthy_osc"))
+    ), "false oscillation on a constant-amplitude (GAN-like) run"
     clean = lint(_synthetic("clean"))
     assert clean == [], f"false positive on clean run: {clean}"
 

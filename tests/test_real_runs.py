@@ -177,6 +177,28 @@ def test_high_lr_shows_in_update_ratio():
 # --- negative rigs: tricky-but-healthy runs that must stay silent (the FP guards) ---
 
 
+def test_decaying_oscillation_not_flagged():
+    """SGD momentum 0.99 oscillates hard early (200+ smoothed reversals) but the
+    amplitude DECAYS as it settles into the minimum. That is healthy convergence, not
+    instability — GS009's growing-amplitude gate must keep it silent."""
+    torch.manual_seed(0)
+    model = _mlp(64)
+    x, y = _data(512, seed=0)
+    opt = torch.optim.SGD(model.parameters(), lr=0.02, momentum=0.99)
+    lossf = torch.nn.MSELoss()
+    mon = gradsnitch.watch(model, opt)
+    for step in range(400):
+        opt.zero_grad()
+        loss = lossf(model(x), y)
+        loss.backward()
+        mon.log(step, loss.item())
+        opt.step()
+    findings = mon.report()
+    assert not _has(findings, "oscillation"), (
+        f"false oscillation on a decaying/settling run: {findings}"
+    )
+
+
 def test_converged_noisy_val_not_overfit():
     """Val improves then settles on a flat noisy floor (~+2% above its min) → argmin
     lands interior by noise. Must NOT read as overfitting — val never meaningfully rose."""
