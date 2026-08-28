@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/snitch.svg" alt="the gradsnitch rat" width="300">
-</p>
-
 <h1 align="center">gradsnitch</h1>
 
 <p align="center"><em>it tells on your training run</em></p>
