@@ -13,11 +13,9 @@ worse than none.
 
 ## Install
 
-Not on PyPI yet — install from a clone:
-
 ```bash
-pip install -e .            # core (numpy + pandas)
-pip install -e ".[torch]"   # + torch, for watch()/framework adapters
+pip install gradsnitch            # core (numpy + pandas)
+pip install "gradsnitch[torch]"   # + torch, for watch()/framework adapters
 ```
 
 ## Use
