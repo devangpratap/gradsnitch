@@ -1,15 +1,38 @@
-# Snitch — it tells on your training run
+<p align="center">
+  <img src="assets/snitch.svg" alt="the gradsnitch rat" width="300">
+</p>
 
-`gradsnitch` is a linter/diagnoser for ML training runs. Hook your loop with one
-line and get **plain-language verdicts on *why* it broke** — not just charts.
+<h1 align="center">gradsnitch</h1>
+
+<p align="center"><em>it tells on your training run</em></p>
+
+<p align="center">
+  <a href="https://github.com/devangpratap/gradsnitch/actions/workflows/tests.yml"><img src="https://github.com/devangpratap/gradsnitch/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
+  <img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="python 3.9+">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
+  <img src="https://img.shields.io/badge/rules-GS001%E2%80%93GS009-E23D28" alt="9 rules">
+</p>
+
+---
+
+A linter/diagnoser for ML training runs. Hook your loop with one line and get
+**plain-language verdicts on *why* it broke** — not just charts.
 
 Tracking (W&B / TensorBoard) shows you the loss curve. Snitch *reads* it and
 tells you what went wrong and what to try. Every finding cites concrete evidence
 and stays **silent unless the signature is unambiguous** — a wrong diagnosis is
 worse than none.
 
-> ⚠️ Early/personal project, not production-hardened. Thresholds are tuned on the
-> bundled real-run rigs; weird curves (RL/GAN/restarts) may still surprise it.
+```
+[GS001] [ERROR] Loss became NaN/Inf
+  evidence: train_loss non-finite first at step 7 (lr=0.55)
+  likely:   LR too high, fp16/bf16 overflow, or a bad batch.
+  try:      Lower LR, add grad clipping, check inputs, or use bf16.
+```
+
+> ⚠️ Early project, not production-hardened. Thresholds are tuned on the bundled
+> real-run rigs; weird curves (RL/GAN/restarts) may still surprise it. Found a
+> false positive? [That is the most useful issue you can file.](https://github.com/devangpratap/gradsnitch/issues/new?template=false_positive.md)
 
 ## Install
 
@@ -68,14 +91,7 @@ pushes verdicts into W&B (Slack/email) on a live run.
 | GS008 | Update/weight ratio off | LR too high/low (Karpathy's ~1e-3), via `watch()` |
 | GS009 | Loss oscillation | growing-amplitude swings (GAN/RL constant osc stays silent) |
 
-Rule IDs are stable (suppress/config pin to them). Example verdict:
-
-```
-[GS001] [ERROR] Loss became NaN/Inf
-  evidence: train_loss non-finite first at step 7 (lr=0.55)
-  likely:   LR too high, fp16/bf16 overflow, or a bad batch.
-  try:      Lower LR, add grad clipping, check inputs, or use bf16.
-```
+Rule IDs are stable — suppressions and config pin to them, so they are never renumbered.
 
 ## How it's built
 
@@ -100,6 +116,5 @@ Rule IDs are stable (suppress/config pin to them). Example verdict:
 - **Gradient-noise / batch-size test** (Cockpit/McCandlish).
 - **Rule-catalog docs page** + richer `mute`/config (Cleanlab-style).
 - **Run history** — compare a run to your last N (Aim-style store).
-- **Packaging** — pip-installable, `tests/` for pytest.
 
-Design notes in [PLAN.md](PLAN.md).
+Adding a rule or an adapter: [CONTRIBUTING.md](CONTRIBUTING.md). Design notes: [PLAN.md](PLAN.md).

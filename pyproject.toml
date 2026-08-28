@@ -14,6 +14,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
 ]
 dependencies = ["numpy", "pandas"]
 
@@ -30,3 +31,7 @@ packages = ["gradsnitch"]
 [tool.pytest.ini_options]
 # Scope collection to tests/ so a sibling clone (e.g. unsloth/) can't hijack the run.
 testpaths = ["tests"]
+
+[project.urls]
+Homepage = "https://github.com/devangpratap/gradsnitch"
+Issues = "https://github.com/devangpratap/gradsnitch/issues"
