@@ -6,7 +6,7 @@
   <a href="https://github.com/devangpratap/gradsnitch/actions/workflows/tests.yml"><img src="https://github.com/devangpratap/gradsnitch/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
   <img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="python 3.9+">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
-  <img src="https://img.shields.io/badge/rules-GS001%E2%80%93GS009-E23D28" alt="9 rules">
+  <img src="https://img.shields.io/badge/rules-GS001%E2%80%93GS010-E23D28" alt="10 rules">
 </p>
 
 ---
@@ -86,6 +86,7 @@ pushes verdicts into W&B (Slack/email) on a live run.
 | GS007 | Vanishing gradients | grad_norm collapses while loss stays stuck |
 | GS008 | Update/weight ratio off | LR too high/low (Karpathy's ~1e-3), via `watch()` |
 | GS009 | Loss oscillation | growing-amplitude swings (GAN/RL constant osc stays silent) |
+| GS010 | LR schedule collapsed early | scheduler length mismatch — LR hits ~0 mid-run and the rest trains at zero |
 
 Rule IDs are stable — suppressions and config pin to them, so they are never renumbered.
 
@@ -98,8 +99,8 @@ Rule IDs are stable — suppressions and config pin to them, so they are never r
 - **The harness is the moat.** `tests/test_real_runs.py` trains tiny *real* torch
   models that break through real mechanisms (LR 1e4→NaN, 8-pt set→overfit,
   frozen→plateau, corrupted batch→spike, deep-sigmoid→vanishing, tiny/big LR→update
-  ratio off) **plus negative rigs** that must stay silent (converged val, terminal
-  spike, short noisy learner, momentum→decaying oscillation). 23 rigs; correctness
+  ratio off, half-length LR schedule→dead second half) **plus negative rigs** that must stay silent (converged val, terminal
+  spike, short noisy learner, momentum→decaying oscillation, a correct full-length decay). 25 rigs; correctness
   here is emergent across adapters, so this is where the value lives.
 
 ## What could be added (roadmap, not done)

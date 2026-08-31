@@ -328,6 +328,56 @@ def detect_loss_oscillation(
     )
 
 
+def detect_lr_collapse(
+    df: pd.DataFrame, floor: float = 0.01, before: float = 0.8, improving: float = 0.05
+) -> Finding | None:
+    # Misconfigured schedule: total_steps/num_training_steps set shorter than the run,
+    # so the LR decays to ~0 partway through and the rest of the run is wasted. A
+    # cosine/linear schedule that lands at 0 *at the end* is by design, so this only
+    # fires when the LR died well before the end AND the loss stopped moving after it
+    # while it was still falling before — otherwise stay silent.
+    if "lr" not in df:
+        return None
+    lr = df["lr"].astype(float).to_numpy()
+    s = df["train_loss"].astype(float).to_numpy()
+    n = len(lr)
+    if n < 60 or not np.isfinite(s).all():
+        return None
+    peak = float(np.nanmax(lr))
+    if not np.isfinite(peak) or peak <= 0:
+        return None
+    dead = lr <= floor * peak
+    if not dead[-1]:
+        return None
+    i = int(n - np.argmin(dead[::-1]))  # first index of the trailing all-dead run
+    if i >= before * n or i < 20 or n - i < 30:
+        return None
+
+    def _drop(seg):  # relative improvement across a segment, median-based
+        w = max(5, len(seg) // 5)
+        a, b = float(np.median(seg[:w])), float(np.median(seg[-w:]))
+        return (a - b) / abs(a) if a else 0.0
+
+    pre, post = _drop(s[:i]), _drop(s[i:])
+    # Post-collapse "progress" is mostly minibatch noise (with lr=0 the weights are
+    # frozen, yet the median still wobbles a few %), so judge it relative to the
+    # pre-collapse drop rather than against a fixed floor.
+    if pre < improving or post >= max(improving, pre / 8):
+        return None  # wasn't learning before, or still learning after -> not the LR
+    step = int(df["step"].iloc[i])
+    return Finding(
+        name="LR schedule collapsed early",
+        severity="warning",
+        evidence=f"lr fell to {lr[i]:.2g} (<{floor:.0%} of its {peak:.2g} peak) at step "
+        f"{step}, {i / n:.0%} into the run, and stayed there; train_loss improved "
+        f"{pre * 100:.0f}% before that and {post * 100:.0f}% after.",
+        likely_cause="Scheduler length mismatch — total/num_training_steps set shorter "
+        "than the actual run, so the remaining steps train at ~zero LR.",
+        suggestion="Set the scheduler's total steps to the real number of optimizer "
+        "steps (mind grad accumulation/epochs), or give the schedule a min_lr floor.",
+    )
+
+
 # (stable rule id, detector). IDs are permanent — config/suppressions pin to them,
 # so never renumber. Add a new rule with the next free GS number.
 DETECTORS = [
@@ -340,6 +390,7 @@ DETECTORS = [
     ("GS007", detect_vanishing_grad),
     ("GS008", detect_update_ratio),
     ("GS009", detect_loss_oscillation),
+    ("GS010", detect_lr_collapse),
 ]
 
 
@@ -559,6 +610,16 @@ def _synthetic(kind: str, n: int = 400) -> pd.DataFrame:
     elif kind == "osc":  # growing-amplitude oscillation, flat mean -> unstable
         loss = 1.0 + (0.05 + step / n * 0.9) * np.sin(step / 3) + rng.normal(0, 0.02, n)
         val = loss + 0.05
+    elif kind == "lrdead":  # schedule hits 0 halfway; loss frozen from there on
+        half = n // 2
+        lr = np.where(step < half, 3e-4 * (1 - step / half), 0.0)
+        loss = np.where(step < half, 3.0 * np.exp(-step / 60) + 0.3, 0.3) + rng.normal(
+            0, 0.01, n
+        )
+        val = loss + 0.05
+    elif kind == "cosine":  # full-length cosine to 0 with real progress -> silent
+        lr = 3e-4 * 0.5 * (1 + np.cos(np.pi * step / n))
+        val = loss + 0.05
     elif kind == "healthy_osc":  # constant-amplitude (GAN/RL) -> must stay silent
         loss = 1.0 + 0.2 * np.sin(step / 3) + rng.normal(0, 0.02, n)
         val = loss + 0.05
@@ -608,6 +669,13 @@ def _selfcheck() -> None:
     assert not any(
         "oscillation" in f.name.lower() for f in lint(_synthetic("healthy_osc"))
     ), "false oscillation on a constant-amplitude (GAN-like) run"
+    assert any("schedule" in f.name.lower() for f in lint(_synthetic("lrdead"))), (
+        "missed early LR-schedule collapse"
+    )
+    # a cosine schedule that lands at 0 at the *end* of the run is by design
+    assert not any("schedule" in f.name.lower() for f in lint(_synthetic("cosine"))), (
+        "false LR-collapse on a normal full-length cosine schedule"
+    )
     clean = lint(_synthetic("clean"))
     assert clean == [], f"false positive on clean run: {clean}"
 

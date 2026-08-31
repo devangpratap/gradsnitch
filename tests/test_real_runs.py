@@ -199,6 +199,21 @@ def test_decaying_oscillation_not_flagged():
     )
 
 
+def test_early_lr_collapse_from_short_schedule():
+    """The classic scheduler-length bug: num_training_steps set to half the run, so
+    the LR linearly decays to 0 at step 200 and the last 200 steps do nothing."""
+    total = 200  # WRONG: the real run is 400 steps
+    mon = _train(lr=lambda s: 3e-2 * max(0.0, 1 - s / total), steps=400)
+    f = mon.report()
+    assert _has(f, "schedule"), "missed a schedule that died halfway"
+
+
+def test_full_length_decay_not_flagged():
+    """Same schedule, correct length: decays to 0 exactly at the end. By design."""
+    mon = _train(lr=lambda s: 3e-2 * max(0.0, 1 - s / 400), steps=400)
+    assert not _has(mon.report(), "schedule"), "false positive on a correct schedule"
+
+
 def test_converged_noisy_val_not_overfit():
     """Val improves then settles on a flat noisy floor (~+2% above its min) → argmin
     lands interior by noise. Must NOT read as overfitting — val never meaningfully rose."""
