@@ -244,7 +244,11 @@ def detect_vanishing_grad(
 
 
 def detect_update_ratio(
-    df: pd.DataFrame, low: float = -4.0, high: float = -2.0, skip: float = 0.1
+    df: pd.DataFrame,
+    low: float = -4.0,
+    high: float = -2.0,
+    skip: float = 0.1,
+    sustained: float = 0.6,
 ) -> Finding | None:
     # Karpathy's rule of thumb: healthy log10(||ΔW||/||W||) sits near -3. Only fires
     # on the update_ratio signal watch(model, optimizer) captures — absent for
@@ -256,11 +260,21 @@ def detect_update_ratio(
     r = r[np.isfinite(r) & (r > 0)]
     if len(r) < 30:
         return None
-    r = r.iloc[int(len(r) * skip) :]  # drop warmup: early ratios swing wildly
-    med = float(np.median(np.log10(r)))
+    # Early ratios swing wildly, so always drop a real warmup, not just a percentage
+    # of a short run, and judge only a steady state with enough samples to have one.
+    r = r.iloc[max(20, int(len(r) * skip)) :]
+    if len(r) < 20:
+        return None
+    lg = np.log10(r.to_numpy())
+    med = float(np.median(lg))
     if low <= med <= high:
         return None  # healthy
     too_high = med > high
+    # A median just past the band can come from a fat tail rather than a wrong LR, so
+    # the deviation has to be how the run mostly behaves before it's worth a verdict.
+    beyond = float((lg > high).mean() if too_high else (lg < low).mean())
+    if beyond < sustained:
+        return None
     return Finding(
         name="LR too high (update/weight ratio)"
         if too_high
@@ -268,7 +282,7 @@ def detect_update_ratio(
         severity="warning",
         evidence=f"median update/weight ratio ~1e{med:.1f} "
         f"({'above' if too_high else 'below'} the healthy ~1e-3; "
-        f"band is 1e{high:.0f}..1e{low:.0f}).",
+        f"band is 1e{high:.0f}..1e{low:.0f}), on {beyond:.0%} of steps.",
         likely_cause="Each step moves the weights "
         + ("too much — LR too high." if too_high else "too little — LR too low."),
         suggestion="Lower the LR (or add clipping)."

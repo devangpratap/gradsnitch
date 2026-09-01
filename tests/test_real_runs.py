@@ -202,6 +202,38 @@ def test_decaying_oscillation_not_flagged():
     )
 
 
+def test_update_ratio_needs_a_sustained_deviation():
+    """A fat tail can drag the median just past the band without the LR being wrong.
+    GS008 fires only when the deviation is how the run mostly behaves, and only once
+    there are enough post-warmup steps to have a steady state at all."""
+    n = 200
+    ratios = np.concatenate(
+        [np.full(int(n * 0.55), 1e-1), np.full(n - int(n * 0.55), 1e-3)]
+    )
+    np.random.RandomState(0).shuffle(ratios)
+    ratios = np.concatenate([np.full(30, 1e-1), ratios])  # wild warmup, must be dropped
+
+    def _lint(r):
+        return gradsnitch.lint(
+            pd.DataFrame(
+                {
+                    "step": range(len(r)),
+                    "train_loss": np.linspace(5, 4.9, len(r)),
+                    "update_ratio": r,
+                }
+            )
+        )
+
+    assert not _has(_lint(ratios), "update/weight ratio"), (
+        "fired on a tail, not a trend"
+    )
+    hot = np.concatenate([np.full(30, 1e-1), np.full(n, 1e-1)])
+    assert _has(_lint(hot), "update/weight ratio"), "missed a genuinely hot LR"
+    assert not _has(_lint(np.full(35, 1e-1)), "update/weight ratio"), (
+        "judged a run with too few post-warmup steps to have a steady state"
+    )
+
+
 def test_smooth_then_noisy_not_flagged_as_oscillation():
     """A CSV/W&B import whose early phase is a near-perfect decay: detrending it leaves
     ~1e-15 of float noise, so any ordinary late minibatch jitter used to read as
