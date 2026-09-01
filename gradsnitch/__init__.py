@@ -313,8 +313,9 @@ def detect_loss_oscillation(
     third = len(sm) // 3
     amp_early = _amp(sm[:third])
     amp_late = _amp(sm[-third:])
-    if amp_early <= 0 or amp_late < grow * amp_early:
-        return None  # constant/decaying amplitude = healthy osc or settling
+    floor = 1e-3 * abs(float(np.median(sm)))  # below this a "swing" is float noise
+    if amp_early <= floor or amp_late < grow * amp_early:
+        return None  # flat/constant/decaying amplitude = healthy osc or settling
     step = int(df["step"].iloc[-1])
     return Finding(
         name="Loss oscillation (growing amplitude)",
@@ -343,8 +344,8 @@ def detect_lr_collapse(
     n = len(lr)
     if n < 60 or not np.isfinite(s).all():
         return None
-    peak = float(np.nanmax(lr))
-    if not np.isfinite(peak) or peak <= 0:
+    finite = lr[np.isfinite(lr)]
+    if len(finite) == 0 or (peak := float(finite.max())) <= 0:
         return None
     dead = lr <= floor * peak
     if not dead[-1]:

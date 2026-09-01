@@ -26,6 +26,8 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
+import numpy as np
+import pandas as pd
 import gradsnitch
 
 
@@ -106,9 +108,10 @@ def test_nan_from_exploding_lr():
 def test_divergence_from_lr_bump():
     """Bad schedule: small LR, then bumped high at the midpoint → loss really climbs."""
     half = 150
-    sched = lambda s: (
-        0.05 if s < half else 0.2
-    )  # 0.2 climbs but stays finite; >=0.3 overflows to NaN
+
+    def sched(s):  # 0.2 climbs but stays finite; >=0.3 overflows to NaN
+        return 0.05 if s < half else 0.2
+
     findings = _train(lr=sched, steps=300).report()
     assert _has(findings, "diverg"), f"missed real divergence: {findings}"
     assert not _has(findings, "nan"), (
@@ -196,6 +199,23 @@ def test_decaying_oscillation_not_flagged():
     findings = mon.report()
     assert not _has(findings, "oscillation"), (
         f"false oscillation on a decaying/settling run: {findings}"
+    )
+
+
+def test_smooth_then_noisy_not_flagged_as_oscillation():
+    """A CSV/W&B import whose early phase is a near-perfect decay: detrending it leaves
+    ~1e-15 of float noise, so any ordinary late minibatch jitter used to read as
+    astronomical amplitude growth and produce a bogus "LR too high" verdict."""
+    n = 200
+    loss = np.concatenate(
+        [
+            np.linspace(5, 1, n // 2),
+            1 + np.random.RandomState(0).normal(0, 0.01, n // 2),
+        ]
+    )
+    findings = gradsnitch.lint(pd.DataFrame({"step": range(n), "train_loss": loss}))
+    assert not _has(findings, "oscillation"), (
+        f"float noise in a flat segment read as a growing swing: {findings}"
     )
 
 
