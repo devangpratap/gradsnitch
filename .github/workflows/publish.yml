@@ -1,0 +1,21 @@
+name: publish
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write        # mints the OIDC token PyPI trusts; no API token needed
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # a release is irreversible on PyPI, so don't ship a build that fails its own tests
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+      - run: pip install build && python -m build
+      - uses: pypa/gh-action-pypi-publish@release/v1
