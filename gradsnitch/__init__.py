@@ -13,6 +13,8 @@ unambiguous. The self-check asserts no findings on a clean run.
 """
 
 from __future__ import annotations
+
+__version__ = "0.1.0"
 from dataclasses import dataclass
 import numpy as np
 import pandas as pd

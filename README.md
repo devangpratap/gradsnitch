@@ -67,7 +67,8 @@ Already have a run? Lint any export — column names are auto-normalized
 (`train/loss`, `learning_rate`, `global_step`, … all map):
 
 ```python
-gradsnitch.lint_csv("wandb_export.csv")
+for finding in gradsnitch.lint_csv("wandb_export.csv"):
+    print(finding)
 ```
 
 Options: `mute={"GS003"}` suppresses a rule by id; `on_alert=integrations.wandb_alert`
